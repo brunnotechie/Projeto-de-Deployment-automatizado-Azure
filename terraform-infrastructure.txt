@@ -1,0 +1,182 @@
+# Configure the Azure provider
+provider "azurerm" {
+  version = "~> 2.46.0"
+  features {}
+}
+
+# Create a resource group
+resource "azurerm_resource_group" "rg" {
+  name     = "my-serverless-rg"
+  location = "West Europe"
+}
+
+# Create an App Service Plan
+resource "azurerm_app_service_plan" "plan" {
+  name                = "my-serverless-plan"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  kind                = "FunctionApp"
+  reserved            = true
+
+  sku {
+    tier = "Dynamic"
+    size = "Y1"
+  }
+}
+
+# Create a Function App
+resource "azurerm_function_app" "function_app" {
+  name                       = "my-serverless-function"
+  location                   = azurerm_resource_group.rg.location
+  resource_group_name        = azurerm_resource_group.rg.name
+  app_service_plan_id        = azurerm_app_service_plan.plan.id
+  storage_account_name       = azurerm_storage_account.storage.name
+  storage_account_access_key = azurerm_storage_account.storage.primary_access_key
+  version                    = "~3"
+
+  app_settings = {
+    FUNCTIONS_WORKER_RUNTIME = "dotnet"
+  }
+}
+
+# Create a Storage Account
+resource "azurerm_storage_account" "storage" {
+  name                     = "myserverlessstorage"
+  resource_group_name      = azurerm_resource_group.rg.name
+  location                 = azurerm_resource_group.rg.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}
+
+# Create an Azure DevOps Project
+resource "azuredevops_project" "project" {
+  name       = "my-serverless-project"
+  visibility = "private"
+  version_control {
+    source_control_type = "Git"
+  }
+  work_item_process {
+    process_type = "agile"
+  }
+}
+
+# Create an Azure DevOps Service Connection
+resource "azuredevops_serviceendpoint_azurerm" "azure_service_connection" {
+  project_id            = azuredevops_project.project.id
+  service_endpoint_name = "my-azure-subscription"
+  azurerm_subscription  = "my-azure-subscription-id"
+}
+
+# Create an Azure DevOps Build Pipeline
+resource "azuredevops_build_definition" "build_pipeline" {
+  project_id = azuredevops_project.project.id
+  name       = "Serverless Website Build Pipeline"
+
+  pipeline {
+    type = "BUILD"
+
+    stage {
+      name = "Build"
+
+      jobs {
+        job {
+          pool {
+            vmImage = "windows-latest"
+          }
+
+          step {
+            task = "NuGetToolInstaller@1"
+          }
+
+          step {
+            task = "NuGetCommand@2"
+          }
+
+          step {
+            task = "VSBuild@1"
+            inputs = {
+              solution = "**/*.sln"
+              msbuildArgs = "/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PackageLocation=\"$(build.artifactStagingDirectory)\""
+              platform = "Any CPU"
+              configuration = "Release"
+            }
+          }
+
+          step {
+            task = "VSTest@2"
+            inputs = {
+              platform = "Any CPU"
+              configuration = "Release"
+            }
+          }
+
+          step {
+            task = "PublishBuildArtifacts@1"
+          }
+        }
+      }
+    }
+  }
+}
+
+# Create an Azure DevOps Release Pipeline
+resource "azuredevops_release_definition" "release_pipeline" {
+  project_id = azuredevops_project.project.id
+  name       = "Serverless Website Release Pipeline"
+
+  artifact {
+    definition_id = azuredevops_build_definition.build_pipeline.id
+    type          = "Build"
+  }
+
+  environment {
+    name = "Test"
+    deployment_input {
+      trigger_type = "automaticallytrigger"
+    }
+    task {
+      task_id        = "e28912f1-0114-4464-802a-a3a35437fd16"
+      version        = "1.*"
+      inputs = {
+        azureSubscription = azuredevops_serviceendpoint_azurerm.azure_service_connection.service_endpoint_name
+        appName = "my-test-app"
+        resourceGroupName = azurerm_resource_group.rg.name
+        slotName = "production"
+      }
+    }
+  }
+
+  environment {
+    name = "Staging"
+    deployment_input {
+      trigger_type = "automaticallytrigger"
+    }
+    task {
+      task_id        = "e28912f1-0114-4464-802a-a3a35437fd16"
+      version        = "1.*"
+      inputs = {
+        azureSubscription = azuredevops_serviceendpoint_azurerm.azure_service_connection.service_endpoint_name
+        appName = "my-staging-app"
+        resourceGroupName = azurerm_resource_group.rg.name
+        slotName = "production"
+      }
+    }
+  }
+
+  environment {
+    name = "Production"
+    deployment_input {
+      trigger_type = "automaticallytrigger"
+    }
+    task {
+      task_id        = "e28912f1-0114-4464-802a-a3a35437fd16"
+      version        = "1.*"
+      inputs = {
+        azureSubscription = azuredevops_serviceendpoint_azurerm.azure_service_connection.service_endpoint_name
+        appName = "my-prod-app"
+        resourceGroupName = azurerm_resource_group.rg.name
+        slotName = "production"
+      }
+    }
+  }
+}
