@@ -1,0 +1,40 @@
+---
+- hosts: localhost
+  connection: local
+  vars:
+    resource_group_name: "my-serverless-rg"
+    function_app_name: "my-serverless-function"
+    application_insights_name: "my-serverless-insights"
+
+  tasks:
+
+    - name: Create Application Insights instance
+      azure_rm_applicationinsights:
+        resource_group: "{{ resource_group_name }}"
+        name: "{{ application_insights_name }}"
+        application_type: web
+      register: app_insights
+
+    - name: Update Function App settings
+      azure_rm_functionapp:
+        resource_group: "{{ resource_group_name }}"
+        name: "{{ function_app_name }}"
+        app_settings:
+          - name: APPINSIGHTS_INSTRUMENTATIONKEY
+            value: "{{ app_insights.instrumentation_key }}"
+          - name: FUNCTIONS_WORKER_RUNTIME
+            value: dotnet
+      register: function_app
+
+    - name: Restart Function App
+      azure_rm_functionapp_info:
+        resource_group: "{{ resource_group_name }}"
+        name: "{{ function_app_name }}"
+      register: function_app_info
+
+    - name: Restart Function App
+      azure_rm_functionapp:
+        resource_group: "{{ resource_group_name }}"
+        name: "{{ function_app_name }}"
+        state: restarted
+      when: function_app_info.changed
